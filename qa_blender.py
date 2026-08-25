@@ -19,10 +19,13 @@ glb = glbs[0]
 # Clean scene and import generated animation.
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete(use_global=False)
-bpy.ops.import_scene.gltf(filepath=str(glb.resolve()))
+result = bpy.ops.import_scene.gltf(filepath=str(glb.resolve()))
+if "FINISHED" not in result:
+    raise RuntimeError(f"GLB import failed: {result}")
 
 scene = bpy.context.scene
-scene.render.engine = "BLENDER_EEVEE_NEXT" if hasattr(scene, "eevee") else "BLENDER_EEVEE"
+# Ubuntu 24.04 ships Blender 4.0.2; use the stable Eevee identifier there.
+scene.render.engine = "BLENDER_EEVEE"
 scene.render.resolution_x = 720
 scene.render.resolution_y = 720
 scene.render.resolution_percentage = 100
@@ -35,6 +38,8 @@ armatures = [o for o in scene.objects if o.type == "ARMATURE"]
 meshes = [o for o in scene.objects if o.type == "MESH"]
 if not armatures:
     raise RuntimeError("Imported GLB has no armature")
+if not meshes:
+    raise RuntimeError("Imported GLB has no mesh")
 arm = armatures[0]
 
 # Determine authored action range.
@@ -112,9 +117,11 @@ for fr in frames:
         path = PREVIEW / f"f{fr:04d}_{name}.png"
         scene.render.filepath = str(path.resolve())
         bpy.ops.render.render(write_still=True)
+        if not path.exists():
+            raise RuntimeError(f"Render did not produce {path}")
         rendered.append(str(path))
 
-# Basic transform QA from named Mixamo bones.
+# Basic transform QA from named Mixamo/Y-bot bones.
 def bone_world_head(name: str):
     pb = arm.pose.bones.get(name)
     if pb is None:
