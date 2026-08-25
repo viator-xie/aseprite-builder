@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'finalize_003_v2_designed_combo.py'
+      - 'finalize_003_v2_designed_combo_fix.py'
       - '.github/workflows/attack003_v2_finalize.yml'
   workflow_dispatch:
 
@@ -48,9 +49,7 @@ jobs:
           printf '%s\n' '"""Minimal CI motion_rep initializer."""' > kimodo/kimodo/motion_rep/__init__.py
       - name: Build genuinely redesigned combo
         run: |
-          find input_stageA -type f | head -n 30
-          find input_jump -type f | head -n 30
-          PYTHONPATH=kimodo python finalize_003_v2_designed_combo.py
+          PYTHONPATH=kimodo python finalize_003_v2_designed_combo_fix.py
           cat attack003_v2_final/003_v2_report.json
           test -f attack003_v2_final/003_v2_designed_contact_sheet.png
           test -f attack003_v2_final/003_A01_Designed_Combo_3Hit_V2_InPlace_SOMA77_30fps.bvh
