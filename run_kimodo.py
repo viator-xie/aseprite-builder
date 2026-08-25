@@ -22,47 +22,34 @@ OUT = Path(os.environ.get("KIMODO_OUT", "artifacts"))
 OUT.mkdir(parents=True, exist_ok=True)
 
 
-def copy_result_file(value, dst_dir: Path) -> list[str]:
-    """Collect any local file paths returned by gradio_client."""
-    copied: list[str] = []
-    if value is None:
-        return copied
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            copied.extend(copy_result_file(item, dst_dir))
-        return copied
-    if isinstance(value, dict):
-        for item in value.values():
-            copied.extend(copy_result_file(item, dst_dir))
-        return copied
-
-    # gradio_client may return a pathlib-like object or a FileData-ish value.
-    candidates = []
+def copy_generated_file(result) -> Path | None:
+    """Copy only the first Gradio return value, which is the generated model file."""
+    if not isinstance(result, (list, tuple)) or not result:
+        return None
+    value = result[0]
+    candidates: list[Path] = []
     if isinstance(value, (str, os.PathLike)):
         candidates.append(Path(value))
     for attr in ("path", "name"):
         p = getattr(value, attr, None)
         if p:
             candidates.append(Path(str(p)))
-
     for src in candidates:
-        if src.is_file():
-            dst = dst_dir / src.name
-            if src.resolve() != dst.resolve():
-                shutil.copy2(src, dst)
-            copied.append(str(dst))
-    return copied
+        try:
+            if src.is_file():
+                dst = OUT / src.name
+                if src.resolve() != dst.resolve():
+                    shutil.copy2(src, dst)
+                return dst
+        except OSError:
+            continue
+    return None
 
 
 def main() -> int:
     print(f"Connecting to Hugging Face Space: {SPACE}")
     token = os.environ.get("HF_TOKEN") or None
-    kwargs = {}
-    if token:
-        # Current gradio_client uses hf_token; keeping this conditional means
-        # the workflow also works anonymously when no secret is configured.
-        kwargs["hf_token"] = token
-
+    kwargs = {"hf_token": token} if token else {}
     client = Client(SPACE, **kwargs)
 
     print("\n=== Space API ===")
@@ -76,17 +63,19 @@ def main() -> int:
     except Exception as exc:
         print(f"view_api failed (non-fatal): {exc}")
 
-    print("\n=== Kimodo request ===")
-    print(json.dumps({
+    request_meta = {
         "prompt": PROMPT,
         "model": MODEL,
         "character": CHARACTER,
         "duration": DURATION,
         "seed": SEED,
-    }, indent=2, ensure_ascii=False))
+    }
+    print("\n=== Kimodo request ===")
+    print(json.dumps(request_meta, indent=2, ensure_ascii=False))
+    (OUT / "request.json").write_text(
+        json.dumps(request_meta, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
-    # /generate is the Space's stable simple text-to-motion Gradio endpoint.
-    # It returns (model_file, status_text, rewritten_prompt).
     result = client.predict(
         PROMPT,
         MODEL,
@@ -103,15 +92,12 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    copied = copy_result_file(result, OUT)
-    print("\n=== Copied output files ===")
-    for p in copied:
-        print(p)
-
-    if not any(Path(p).suffix.lower() in {".fbx", ".glb", ".gltf"} for p in copied):
+    generated = copy_generated_file(result)
+    if generated is None or generated.suffix.lower() not in {".fbx", ".glb", ".gltf"}:
         print("ERROR: generation returned no FBX/GLB file", file=sys.stderr)
         return 2
 
+    print(f"Generated file copied to: {generated}")
     return 0
 
 
