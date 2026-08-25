@@ -1,0 +1,59 @@
+name: Build 003 V2 Blender
+
+on:
+  push:
+    paths:
+      - 'build_003_v2_blender.py'
+      - '.github/workflows/build_003_v2_blender.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download redesigned 003 v2 data
+        uses: actions/download-artifact@v4
+        with:
+          name: 003_A01_Designed_Combo_3Hit_V2_Data
+          path: input
+          repository: ${{ github.repository }}
+          run-id: 32861896937
+          github-token: ${{ github.token }}
+      - name: Install Blender
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender xvfb
+          blender --version | head -n 2
+      - name: Build Blender files
+        run: |
+          xvfb-run -a blender --background --python build_003_v2_blender.py
+          test -f blender_v2/003_A01_Designed_Combo_3Hit_V2_InPlace.blend
+          test -f blender_v2/003_A01_Designed_Combo_3Hit_V2_RootMotion.blend
+      - name: Package
+        run: |
+          cp input/*.bvh blender_v2/
+          cp input/003_v2_report.json blender_v2/
+          cp input/003_v2_designed_contact_sheet.png blender_v2/
+          cat > blender_v2/README_CN.txt <<'EOF'
+          003 V2 — 真正重新设计的三连动作
+
+          第一段：右上 -> 左下斜劈。
+          第二段：左 -> 右横斩，同时向前突进。
+          第三段：举至高位，真实离地跳跃，然后向下劈落。
+
+          InPlace.blend：保留跳跃高度，但去掉水平 Root Motion。
+          RootMotion.blend：保留第二段突进和第三段落地后的整体位移。
+          30 FPS。时间轴包含 HIT_1 / HIT_2 / HIT_3 标记。
+          未添加任何武器模型。
+          EOF
+      - name: Upload Blender v2
+        uses: actions/upload-artifact@v4
+        with:
+          name: 003_A01_Designed_Combo_3Hit_V2_Blender
+          path: blender_v2/
+          retention-days: 14
+          if-no-files-found: error
