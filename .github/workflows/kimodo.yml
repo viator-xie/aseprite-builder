@@ -18,12 +18,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install client and Blender
+      - name: Install client, Blender and gltfpack
         run: |
           python -m pip install --upgrade pip
           pip install 'gradio_client>=1.8,<2' pillow
           sudo apt-get update
           sudo apt-get install -y blender python3-numpy
+          npm install --global gltfpack
 
       - name: Generate F01 with Kimodo
         env:
@@ -36,6 +37,13 @@ jobs:
             A timid young woman standing idle nervously with both arms hanging naturally at her sides, palms facing inward toward the thighs, thumbs pointing forward, shoulders slightly hunched and inward, head slightly lowered, subtle nervous breathing and tiny cautious weight shifts, realistic restrained body language, no weapon, no magic, no exaggerated gestures.
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python run_kimodo.py
+
+      - name: Decompress GLB for QA only
+        run: |
+          mkdir -p artifacts/qa_input
+          SRC=$(find artifacts -maxdepth 1 -name '*.glb' -print -quit)
+          test -n "$SRC"
+          gltfpack -i "$SRC" -o artifacts/qa_input/F01_uncompressed.glb -kn -km -ke
 
       - name: Verify Blender Python environment
         run: |
