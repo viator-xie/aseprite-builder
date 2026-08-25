@@ -18,14 +18,13 @@ FINAL_BVH = OUT / "001_timid_idle_soma77_30fps.bvh"
 REPORT = OUT / "001_timid_idle_loop_report.json"
 
 FPS = 30.0
-BASE_START = 0
-BASE_FRAMES = 75       # 2.5 s of the quietest source passage
-BLEND_FRAMES = 15      # 0.5 s cyclic overlap
-REPEATS = 2            # 60-frame seamless cycle x2 = 4.0 s period
+SOURCE_START = 0
+SOURCE_FRAMES = 30       # 1.0 s: quietest real CMU passage
+FINAL_FRAMES = 120       # 4.0 s game idle loop
 
 
-def geodesic_blend_mats(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
-    """Vectorized SO(3) interpolation from matrices a to b."""
+def geodesic_interp_mats(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
+    """Vectorized shortest-arc SO(3) interpolation from matrices a to b."""
     rel = np.swapaxes(a, -1, -2) @ b
     flat = rel.reshape(-1, 3, 3)
     rv = Rotation.from_matrix(flat).as_rotvec()
@@ -41,6 +40,31 @@ def rot_angle_between(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.acos(c)
 
 
+def periodic_resample_rotations(src: np.ndarray, n_out: int) -> np.ndarray:
+    """Resample one discrete rotation cycle to n_out frames, including wrap edge."""
+    n = len(src)
+    out = np.empty((n_out,) + src.shape[1:], dtype=np.float64)
+    for k in range(n_out):
+        phase = k * n / n_out
+        i0 = int(np.floor(phase)) % n
+        frac = phase - np.floor(phase)
+        i1 = (i0 + 1) % n
+        out[k] = geodesic_interp_mats(src[i0], src[i1], frac)
+    return out
+
+
+def periodic_resample_vectors(src: np.ndarray, n_out: int) -> np.ndarray:
+    n = len(src)
+    out = np.empty((n_out,) + src.shape[1:], dtype=np.float64)
+    for k in range(n_out):
+        phase = k * n / n_out
+        i0 = int(np.floor(phase)) % n
+        frac = phase - np.floor(phase)
+        i1 = (i0 + 1) % n
+        out[k] = (1.0 - frac) * src[i0] + frac * src[i1]
+    return out
+
+
 if not SRC_NPZ.exists():
     raise FileNotFoundError(SRC_NPZ)
 
@@ -49,48 +73,25 @@ local = np.asarray(data["local_rot_mats"], dtype=np.float64)
 root = np.asarray(data["root_positions"], dtype=np.float64)
 if local.shape[1:] != (77, 3, 3):
     raise RuntimeError(f"Unexpected SOMA local rotation shape: {local.shape}")
-if len(local) < BASE_START + BASE_FRAMES:
-    raise RuntimeError("Source motion shorter than required quiet passage")
+if len(local) < SOURCE_START + SOURCE_FRAMES:
+    raise RuntimeError("Source motion shorter than required 1-second quiet passage")
 
-base_local = local[BASE_START:BASE_START + BASE_FRAMES].copy()
-base_root = root[BASE_START:BASE_START + BASE_FRAMES].copy()
-N = len(base_local)
-B = BLEND_FRAMES
-if not (0 < B < N // 2):
-    raise RuntimeError(f"Invalid cyclic overlap B={B}, N={N}")
+src_local = local[SOURCE_START:SOURCE_START + SOURCE_FRAMES].copy()
+src_root = root[SOURCE_START:SOURCE_START + SOURCE_FRAMES].copy()
 
-# Idle is authored in-place. Preserve the captured sway, but remove only the
-# tiny net X/Z translation across the 2.5-second source passage. Y is untouched.
-t = np.linspace(0.0, 1.0, N, dtype=np.float64)
+# Game idle is in-place. Remove only the tiny net horizontal translation of
+# the real 1-second capture; keep vertical breathing/sway untouched.
+t = np.linspace(0.0, 1.0, SOURCE_FRAMES, dtype=np.float64)
 for axis in (0, 2):
-    drift = base_root[-1, axis] - base_root[0, axis]
-    base_root[:, axis] -= t * drift
-    base_root[:, axis] -= base_root[0, axis]
+    drift = src_root[-1, axis] - src_root[0, axis]
+    src_root[:, axis] -= t * drift
+    src_root[:, axis] -= src_root[0, axis]
 
-# Standard cyclic overlap-add. The cycle begins at original frame B, follows
-# the untouched middle passage, then blends original tail -> original head.
-# The last output frame therefore lands on original frame B-1 and the next
-# loop starts on original frame B: a normal adjacent-frame transition.
-body_local = base_local[B:N-B]
-body_root = base_root[B:N-B]
-seam_local = []
-seam_root = []
-for k in range(B):
-    alpha = (k + 1) / B
-    tail_i = N - B + k
-    head_i = k
-    seam_local.append(geodesic_blend_mats(base_local[tail_i], base_local[head_i], alpha))
-    seam_root.append((1.0 - alpha) * base_root[tail_i] + alpha * base_root[head_i])
-
-cycle_local = np.concatenate([body_local, np.stack(seam_local)], axis=0)
-cycle_root = np.concatenate([body_root, np.stack(seam_root)], axis=0)
-if len(cycle_local) != 60:
-    raise RuntimeError(f"Expected 60-frame / 2.0 s seamless base cycle, got {len(cycle_local)}")
-
-final_local = np.concatenate([cycle_local] * REPEATS, axis=0)
-final_root = np.concatenate([cycle_root] * REPEATS, axis=0)
-if len(final_local) != 120:
-    raise RuntimeError(f"Expected 120-frame / 4.0 s final loop, got {len(final_local)}")
+# Slow the quiet real capture by exactly 4x using a periodic sampler. The
+# frame 29 -> frame 0 edge is part of the same interpolation domain, so the
+# loop closure has no separate hand-authored blend segment.
+final_local = periodic_resample_rotations(src_local, FINAL_FRAMES)
+final_root = periodic_resample_vectors(src_root, FINAL_FRAMES)
 
 soma = build_skeleton(77)
 final_motion = complete_motion_dict(
@@ -109,7 +110,7 @@ save_motion_bvh(
     standard_tpose=True,
 )
 
-# Official Kimodo reader round-trip on the final deliverable.
+# Official Kimodo round-trip on the exact deliverable.
 round_motion, round_fps = bvh_to_kimodo_motion(FINAL_BVH, skeleton=soma, standard_tpose=True)
 if abs(round_fps - FPS) > 0.02:
     raise RuntimeError(f"001 roundtrip FPS mismatch: {round_fps}")
@@ -124,58 +125,67 @@ root_rt = torch.linalg.norm(
     dim=-1,
 )
 
-# Seam quality: compare the repeat boundary and final->first loop closure with
-# ordinary adjacent-frame motion. A clean loop should not contain an outlier.
+# Quantitative loop QA on official SOMA FK positions.
 pos = final_motion["posed_joints"].detach().cpu()
 loc = final_motion["local_rot_mats"].detach().cpu()
-adj_pos = torch.linalg.norm(pos[1:] - pos[:-1], dim=-1).mean(-1)
-median_adj_pos = float(adj_pos.median())
-repeat_boundary_pos = float(torch.linalg.norm(pos[60] - pos[59], dim=-1).mean())
-final_boundary_pos = float(torch.linalg.norm(pos[0] - pos[-1], dim=-1).mean())
-repeat_boundary_rot = float(torch.rad2deg(rot_angle_between(loc[59], loc[60])).mean())
-final_boundary_rot = float(torch.rad2deg(rot_angle_between(loc[-1], loc[0])).mean())
+step_pos = torch.linalg.norm(pos[1:] - pos[:-1], dim=-1).mean(-1)
+median_step = float(step_pos.median())
+max_step = float(step_pos.max())
+closure_step = float(torch.linalg.norm(pos[0] - pos[-1], dim=-1).mean())
+closure_rot = float(torch.rad2deg(rot_angle_between(loc[-1], loc[0])).mean())
 
-# The two repeated cycles must be numerically identical by construction.
-cycle_rot_repeat_err = float(torch.rad2deg(rot_angle_between(loc[:60], loc[60:])).max())
-cycle_root_repeat_err = float(torch.linalg.norm(final_motion["root_positions"][:60] - final_motion["root_positions"][60:], dim=-1).max())
+names = list(soma.bone_order_names)
+J = {n: i for i, n in enumerate(names)}
+
+def horiz_range(name: str) -> float:
+    p = pos[:, J[name]][:, [0, 2]]
+    return float(torch.linalg.norm(p.max(0).values - p.min(0).values))
+
+def mean_speed(name: str) -> float:
+    p = pos[:, J[name]]
+    return float(torch.linalg.norm(p[1:] - p[:-1], dim=-1).mean() * FPS)
+
+lf = pos[:, J["LeftFoot"]]
+rf = pos[:, J["RightFoot"]]
+foot_closure_l = float(torch.linalg.norm(lf[0] - lf[-1]))
+foot_closure_r = float(torch.linalg.norm(rf[0] - rf[-1]))
 
 report = {
     "name": "001_timid_idle",
     "source": "CMU 137_28 Normal Wait -> native Kimodo SOMA77",
-    "source_quiet_passage_seconds": [0.0, 2.5],
-    "source_quiet_passage_frames_30fps": [0, 75],
-    "cyclic_overlap_seconds": BLEND_FRAMES / FPS,
-    "base_cycle_frames": 60,
-    "base_cycle_seconds": 60 / FPS,
-    "final_frames": len(final_local),
-    "final_loop_period_seconds": len(final_local) / FPS,
+    "source_quiet_passage_seconds": [0.0, 1.0],
+    "source_quiet_passage_frames_30fps": [0, 30],
+    "source_processing": "X/Z linear detrend only; all joint motion and Y motion remain captured data",
+    "periodic_resampling": "30 source frames -> 120 frames via shortest-arc SO(3) interpolation and cyclic vector interpolation",
+    "final_frames": FINAL_FRAMES,
+    "final_loop_period_seconds": FINAL_FRAMES / FPS,
     "fps": FPS,
-    "root_motion_policy": "in-place X/Z linear detrend only; Y and captured body sway preserved",
     "official_roundtrip": {
         "max_rotation_error_deg": float(torch.rad2deg(rot_rt).max()),
         "mean_rotation_error_deg": float(torch.rad2deg(rot_rt).mean()),
         "max_root_position_error_m": float(root_rt.max()),
         "mean_root_position_error_m": float(root_rt.mean()),
     },
-    "seam_qa": {
-        "median_ordinary_joint_position_step_m": median_adj_pos,
-        "repeat_boundary_joint_position_step_m": repeat_boundary_pos,
-        "final_to_first_joint_position_step_m": final_boundary_pos,
-        "repeat_boundary_rotation_step_deg_mean": repeat_boundary_rot,
-        "final_to_first_rotation_step_deg_mean": final_boundary_rot,
-        "repeat_boundary_position_vs_median_ratio": repeat_boundary_pos / max(median_adj_pos, 1e-9),
-        "final_boundary_position_vs_median_ratio": final_boundary_pos / max(median_adj_pos, 1e-9),
-        "cycle_repeat_max_rotation_error_deg": cycle_rot_repeat_err,
-        "cycle_repeat_max_root_error_m": cycle_root_repeat_err,
+    "loop_qa": {
+        "median_ordinary_joint_position_step_m": median_step,
+        "max_ordinary_joint_position_step_m": max_step,
+        "final_to_first_joint_position_step_m": closure_step,
+        "final_to_first_rotation_step_deg_mean": closure_rot,
+        "closure_position_vs_median_ratio": closure_step / max(median_step, 1e-9),
+        "left_foot_horizontal_range_m": horiz_range("LeftFoot"),
+        "right_foot_horizontal_range_m": horiz_range("RightFoot"),
+        "hips_horizontal_range_m": horiz_range("Hips"),
+        "left_foot_mean_speed_mps": mean_speed("LeftFoot"),
+        "right_foot_mean_speed_mps": mean_speed("RightFoot"),
+        "left_foot_final_to_first_step_m": foot_closure_l,
+        "right_foot_final_to_first_step_m": foot_closure_r,
     },
-    "formal_outputs": {
-        "npz": str(FINAL_NPZ),
-        "bvh": str(FINAL_BVH),
-    },
+    "formal_outputs": {"npz": str(FINAL_NPZ), "bvh": str(FINAL_BVH)},
     "notes": [
         "No Blender re-export is used in the formal data path.",
-        "No joint is hand-keyed; the body motion remains sourced from the real CMU capture.",
-        "Only cyclic SO(3) overlap and in-place root detrending are applied for game-loop usability.",
+        "No joint is hand-keyed or manually posed.",
+        "The animation body is the quietest real segment of CMU 137_28, slowed 4x for a restrained nervous idle.",
+        "Entity-mesh skinning QA is performed separately against NVIDIA SOMA neutral 1.0 before tracker acceptance.",
     ],
 }
 REPORT.write_text(json.dumps(report, indent=2), encoding="utf-8")
