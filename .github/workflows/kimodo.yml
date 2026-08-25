@@ -21,7 +21,7 @@ jobs:
       - name: Install native retarget and Blender QA dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pillow scipy bvhio
+          pip install requests beautifulsoup4 pillow scipy bvhio einops
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           sudo apt-get update
           sudo apt-get install -y blender python3-numpy libegl1 libgl1 libglx0 libopengl0 libgl1-mesa-dri xvfb
@@ -31,17 +31,11 @@ jobs:
           git clone --depth 1 https://github.com/nv-tlabs/kimodo.git kimodo
           test -f kimodo/kimodo/assets/skeletons/somaskel77/somaskel77_standard_tpose.bvh
           grep -n -m1 '^Frames:' kimodo/kimodo/assets/skeletons/somaskel77/somaskel77_standard_tpose.bvh
-          # We only need Kimodo's official skeleton/export/motion utilities here.
-          # The upstream package __init__ eagerly imports the diffusion model and
-          # its large inference dependency stack. Disable only that top-level
-          # side effect; all official conversion modules below remain untouched.
-          cat > kimodo/kimodo/__init__.py <<'PY'
-          """Minimal package initializer for motion-format QA.
-
-          CI intentionally loads official kimodo.skeleton / kimodo.exports code
-          without importing the heavyweight diffusion inference stack.
-          """
-          PY
+          # Only disable package-level convenience re-exports. The actual
+          # official skeleton/BVH/motion modules used below remain untouched.
+          printf '%s\n' '"""Minimal CI package initializer; heavy model imports disabled."""' > kimodo/kimodo/__init__.py
+          printf '%s\n' '"""Minimal CI exports initializer; import concrete modules directly."""' > kimodo/kimodo/exports/__init__.py
+          printf '%s\n' '"""Minimal CI motion_rep initializer; import feature modules directly."""' > kimodo/kimodo/motion_rep/__init__.py
 
       - name: Fetch CMU 137_28 Normal Wait source
         run: |
@@ -103,8 +97,6 @@ jobs:
 
       - name: Native Y-up CMU to SOMA77 retarget and official roundtrip
         run: |
-          # Correct the initial draft's import location. The algorithm itself
-          # uses the untouched upstream parser/serializer implementations.
           sed -i 's/from kimodo.exports.bvh import bvh_to_kimodo_motion, parse_bvh_motion, save_motion_bvh/from kimodo.exports.bvh import bvh_to_kimodo_motion, save_motion_bvh/' retarget_cmu_to_soma_native.py
           sed -i 's/from kimodo.skeleton.bvh import Bvh, SkeletonBvh, load_bvh_animation/from kimodo.skeleton.bvh import Bvh, SkeletonBvh, load_bvh_animation, parse_bvh_motion/' retarget_cmu_to_soma_native.py
           PYTHONPATH=kimodo python retarget_cmu_to_soma_native.py
