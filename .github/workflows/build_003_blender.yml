@@ -1,0 +1,71 @@
+name: Build 003 Blender Combo
+
+on:
+  push:
+    paths:
+      - 'build_003_blender.py'
+      - '.github/workflows/build_003_blender.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download validated 003 final artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 003_Attack_Combo_Final
+          path: input
+          repository: ${{ github.repository }}
+          run-id: 32858496462
+          github-token: ${{ github.token }}
+
+      - name: Install Blender runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender python3-numpy xvfb
+          blender --version | head -n 2
+
+      - name: Build playable Blender combo files
+        run: |
+          xvfb-run -a blender --background --python build_003_blender.py
+          test -f blender_out/003_A01_Combo_3Hit_InPlace.blend
+          test -f blender_out/003_A01_Combo_3Hit_RootMotion.blend
+          ls -lh blender_out
+
+      - name: Package 003 Blender files
+        run: |
+          cp input/003_A01_Attack_Combo_3Hit_InPlace_SOMA77_30fps.bvh blender_out/
+          cp input/003_A01_Attack_Combo_3Hit_RootMotion_SOMA77_30fps.bvh blender_out/
+          cp input/003_final_report.json blender_out/
+          cp input/003_combo_contact_sheet.png blender_out/
+          cat > blender_out/README_CN.txt <<'EOF'
+          003 — A01 三连挥砍动作
+
+          003_A01_Combo_3Hit_InPlace.blend
+          - 原地版，30 FPS，75 帧，约 2.5 秒。
+          - 打开 Blender 直接按空格播放。
+          - 时间轴 ACTION_1 / ACTION_2 / ACTION_3 对应三次命中动作点。
+
+          003_A01_Combo_3Hit_RootMotion.blend
+          - 保留约 16 cm 真人自然步进的版本。
+
+          三个动作点约为：0.50s / 1.07s / 1.87s。
+          右手作为主手，不包含任何道具模型。
+          动作源：CMU 02_09 swordplay -> native SOMA77。
+          三段动作来自同一条连续真人 Mocap，没有逐关节手摆。
+          EOF
+
+      - name: Upload Blender deliverable
+        uses: actions/upload-artifact@v4
+        with:
+          name: 003_A01_Combo_3Hit_Blender
+          path: blender_out/
+          if-no-files-found: error
+          retention-days: 14
