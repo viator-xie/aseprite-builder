@@ -1,4 +1,4 @@
-name: CMU 137_28 Source Fetch
+name: CMU 137_28 to SOMA77 Retarget
 
 on:
   push:
@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  fetch-cmu:
+  retarget:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,14 +18,23 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install downloader dependencies
-        run: pip install requests beautifulsoup4
+      - name: Install source downloader and Blender QA dependencies
+        run: |
+          pip install requests beautifulsoup4 pillow
+          sudo apt-get update
+          sudo apt-get install -y blender python3-numpy libegl1 libgl1 libglx0 libopengl0 libgl1-mesa-dri xvfb
 
-      - name: Download CGSpeed CMU 136-140 pack and extract 137_28
+      - name: Download official Kimodo repository
+        run: |
+          git clone --depth 1 https://github.com/nv-tlabs/kimodo.git kimodo
+          test -f kimodo/kimodo/assets/skeletons/somaskel77/somaskel77_standard_tpose.bvh
+          grep -n -m1 '^Frames:' kimodo/kimodo/assets/skeletons/somaskel77/somaskel77_standard_tpose.bvh
+
+      - name: Fetch CMU 137_28 Normal Wait source
         run: |
           python - <<'PY'
           from __future__ import annotations
-          import hashlib, json, re, shutil, sys, zipfile
+          import hashlib, json, re, shutil, zipfile
           from pathlib import Path
           import requests
           from bs4 import BeautifulSoup
@@ -35,38 +44,28 @@ jobs:
           out.mkdir(exist_ok=True)
           session = requests.Session()
           session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36'})
-
-          print('Fetching MediaFire landing page:', page_url)
           r = session.get(page_url, timeout=40)
-          print('Landing status:', r.status_code, 'bytes:', len(r.content), 'final:', r.url)
           r.raise_for_status()
-          (out/'mediafire_landing.html').write_bytes(r.content)
-
           soup = BeautifulSoup(r.text, 'html.parser')
-          candidates = []
+          candidates=[]
           for selector in ['a#downloadButton', 'a.input.popsok', 'a[aria-label*="Download"]']:
               for a in soup.select(selector):
-                  href = a.get('href')
-                  if href:
-                      candidates.append(href)
+                  if a.get('href'):
+                      candidates.append(a['href'])
           candidates += re.findall(r'https?://download[^"\'<>\\ ]+', r.text)
-          # Preserve order, discard obvious non-download links.
           seen=[]
           for u in candidates:
               u=u.replace('&amp;','&')
               if u not in seen and ('mediafire.com' in u or 'download' in u):
                   seen.append(u)
-          print('Direct candidates:', json.dumps(seen[:10], indent=2))
           if not seen:
               raise RuntimeError('Could not resolve MediaFire direct download URL')
 
-          zip_path = out/'cmu_136_140_2010.zip'
+          zip_path=out/'cmu_136_140_2010.zip'
           last=None
           for direct in seen:
               try:
-                  print('Trying:', direct)
                   with session.get(direct, stream=True, timeout=60, allow_redirects=True) as dr:
-                      print('Download status:', dr.status_code, 'type:', dr.headers.get('content-type'), 'len:', dr.headers.get('content-length'), 'final:', dr.url)
                       dr.raise_for_status()
                       with zip_path.open('wb') as f:
                           for chunk in dr.iter_content(1024*1024):
@@ -74,67 +73,82 @@ jobs:
                                   f.write(chunk)
                   if zipfile.is_zipfile(zip_path):
                       break
-                  last=RuntimeError(f'candidate did not return ZIP: {direct}')
+                  last=RuntimeError('candidate was not zip')
               except Exception as exc:
                   last=exc
-                  print('Candidate failed:', repr(exc))
           else:
-              raise RuntimeError(f'No candidate yielded a ZIP; last={last!r}')
+              raise RuntimeError(f'No candidate yielded a ZIP: {last!r}')
 
-          size=zip_path.stat().st_size
-          sha=hashlib.sha256(zip_path.read_bytes()).hexdigest()
-          print('ZIP OK:', size, 'sha256:', sha)
-
+          archive_sha=hashlib.sha256(zip_path.read_bytes()).hexdigest()
           with zipfile.ZipFile(zip_path) as z:
-              names=z.namelist()
-              hits=[n for n in names if Path(n).name.lower() in {'137_28.bvh','137_28.fbx','137_28.glb'}]
-              print('137_28 hits:', hits)
+              hits=[n for n in z.namelist() if Path(n).name.lower()=='137_28.bvh']
               if not hits:
-                  near=[n for n in names if '137_28' in n.lower()]
-                  print('Near matches:', near)
-                  raise RuntimeError('137_28 not found inside archive')
-              # Prefer the requested BVH original from the CGSpeed conversion pack.
-              hits.sort(key=lambda n: (0 if n.lower().endswith('.bvh') else 1, n))
+                  raise RuntimeError('137_28.bvh missing from CMU 136-140 pack')
               member=hits[0]
-              target=out/Path(member).name
+              target=out/'137_28.bvh'
               with z.open(member) as src, target.open('wb') as dst:
                   shutil.copyfileobj(src,dst)
-
           file_sha=hashlib.sha256(target.read_bytes()).hexdigest()
           meta={
               'motion_id':'137_28',
               'description':'Normal Wait',
               'source_dataset':'Carnegie Mellon Graphics Lab Motion Capture Database',
-              'conversion_release':'CGSpeed MotionBuilder-friendly BVH 2010 re-release',
               'source_page':'https://sites.google.com/a/cgspeed.com/cgspeed/motion-capture/the-motionbuilder-friendly-bvh-conversion-release-of-cmus-motion-capture-database',
               'mediafire_page':page_url,
               'archive_member':member,
-              'archive_size_bytes':size,
-              'archive_sha256':sha,
-              'extracted_file':target.name,
+              'archive_sha256':archive_sha,
               'extracted_sha256':file_sha,
-              'note':'CGSpeed states the 2010 re-release only changed the added initial T-pose; the CMU motion data itself was unchanged.'
+              'note':'CGSpeed 2010 MotionBuilder-friendly conversion. Added first T-pose is used only for retarget calibration.'
           }
           (out/'137_28_source.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
+          zip_path.unlink()
           print(json.dumps(meta,indent=2))
-
-          # Do not upload the 61 MB source archive; keep only the extracted motion + provenance.
-          zip_path.unlink(missing_ok=True)
-          (out/'mediafire_landing.html').unlink(missing_ok=True)
           PY
-
-      - name: Inspect BVH header
-        run: |
-          test -f cmu_source/137_28.bvh
-          head -n 40 cmu_source/137_28.bvh
           grep -n -m1 '^Frames:' cmu_source/137_28.bvh
           grep -n -m1 '^Frame Time:' cmu_source/137_28.bvh
 
-      - name: Upload CMU source
+      - name: Retarget CMU body motion to SOMA77 at exact 30 FPS
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          xvfb-run -a env PYTHONPATH=/usr/lib/python3/dist-packages LIBGL_ALWAYS_SOFTWARE=1 blender --background --python retarget_cmu_to_soma77.py
+          test -f retarget_out/137_28_soma77_30fps.bvh
+          test -f retarget_out/retarget_report.json
+          test -f retarget_out/137_28_soma77_retarget_debug.blend
+          test -n "$(find retarget_out/preview -name '*.png' -print -quit)"
+          grep -n -m1 '^Frames:' retarget_out/137_28_soma77_30fps.bvh
+          grep -n -m1 '^Frame Time:' retarget_out/137_28_soma77_30fps.bvh
+
+      - name: Build retarget QA contact sheet
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          files=sorted(Path('retarget_out/preview').glob('*.png'))
+          if not files:
+              raise SystemExit('no retarget QA renders')
+          cells=[]
+          for p in files:
+              im=Image.open(p).convert('RGB').resize((320,320))
+              c=Image.new('RGB',(320,350),'white')
+              c.paste(im,(0,0))
+              ImageDraw.Draw(c).text((8,328),p.stem,fill='black')
+              cells.append(c)
+          cols=4
+          rows=(len(cells)+cols-1)//cols
+          sheet=Image.new('RGB',(cols*320,rows*350),(225,225,225))
+          for i,c in enumerate(cells):
+              sheet.paste(c,((i%cols)*320,(i//cols)*350))
+          sheet.save('retarget_out/137_28_SOMA77_QA_contact_sheet.jpg',quality=92)
+          PY
+
+      - name: Upload retarget test
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: CMU_137_28_Normal_Wait_Source
-          path: cmu_source/
+          name: CMU_137_28_SOMA77_Retarget_Test
+          path: |
+            cmu_source/137_28_source.json
+            retarget_out/
           if-no-files-found: warn
           retention-days: 7
