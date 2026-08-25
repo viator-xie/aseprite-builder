@@ -1,0 +1,106 @@
+name: 002 W01 Walk F Stage A
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'retarget_002_walk_native.py'
+      - '.github/workflows/w01_walk_f.yml'
+
+jobs:
+  stage-a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install motion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install scipy einops bvhio matplotlib
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Load official Kimodo motion utilities only
+        run: |
+          git clone --depth 1 https://github.com/nv-tlabs/kimodo.git kimodo
+          test -f kimodo/kimodo/assets/skeletons/somaskel77/somaskel77_standard_tpose.bvh
+          printf '%s\n' '"""Minimal CI package initializer; heavy model imports disabled."""' > kimodo/kimodo/__init__.py
+          printf '%s\n' '"""Minimal CI exports initializer; import concrete modules directly."""' > kimodo/kimodo/exports/__init__.py
+          printf '%s\n' '"""Minimal CI motion_rep initializer; import feature modules directly."""' > kimodo/kimodo/motion_rep/__init__.py
+
+      - name: Download CMU 91_20 ShyWalk
+        run: |
+          mkdir -p walk002_source
+          curl -L --fail --retry 3 --retry-delay 2 \
+            'https://raw.githubusercontent.com/Shriinivas/cmubvh/main/Sequence-086-094/91/Data/91_20.zip' \
+            -o walk002_source/91_20.zip
+          sha256sum walk002_source/91_20.zip | tee walk002_source/91_20_zip_sha256.txt
+          unzip -l walk002_source/91_20.zip | tee walk002_source/91_20_zip_listing.txt
+          unzip -q walk002_source/91_20.zip -d walk002_source/unpacked
+          BVH="$(find walk002_source/unpacked -type f -iname '*.bvh' | head -n1)"
+          test -n "$BVH"
+          cp "$BVH" walk002_source/91_20.bvh
+          sha256sum walk002_source/91_20.bvh | tee walk002_source/91_20_bvh_sha256.txt
+          grep -n -m1 '^Frames:' walk002_source/91_20.bvh
+          grep -n -m1 '^Frame Time:' walk002_source/91_20.bvh
+          rm -rf walk002_source/unpacked walk002_source/91_20.zip
+
+      - name: Native CMU ShyWalk to SOMA77
+        run: |
+          PYTHONPATH=kimodo python retarget_002_walk_native.py
+          test -f walk002_out/002_W01_Walk_F_ShyWalk_SOMA77_30fps.npz
+          test -f walk002_out/002_W01_Walk_F_ShyWalk_SOMA77_30fps.bvh
+          test -f walk002_out/002_stageA_report.json
+          cat walk002_out/002_stageA_report.json
+
+      - name: Build Stage A skeleton QA sheet
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re, json
+          import numpy as np
+          import matplotlib.pyplot as plt
+          out=Path('walk002_out')
+          d=np.load(out/'002_W01_Walk_F_ShyWalk_SOMA77_30fps.npz')
+          p=d['posed_joints']; T=len(p)
+          text=(out/'002_W01_Walk_F_ShyWalk_SOMA77_30fps.bvh').read_text(errors='replace')
+          names=[]
+          for line in text.splitlines():
+              m=re.match(r'\s*(ROOT|JOINT)\s+(.+)$',line)
+              if m: names.append(m.group(2).strip())
+          if names and names[0]=='Root': names=names[1:]
+          if len(names)!=77: raise RuntimeError(f'expected 77 joints, got {len(names)}')
+          J={n:i for i,n in enumerate(names)}
+          edges=[('Hips','Spine1'),('Spine1','Spine2'),('Spine2','Chest'),('Chest','Neck1'),('Neck1','Neck2'),('Neck2','Head'),('Chest','LeftShoulder'),('LeftShoulder','LeftArm'),('LeftArm','LeftForeArm'),('LeftForeArm','LeftHand'),('Chest','RightShoulder'),('RightShoulder','RightArm'),('RightArm','RightForeArm'),('RightForeArm','RightHand'),('Hips','LeftLeg'),('LeftLeg','LeftShin'),('LeftShin','LeftFoot'),('LeftFoot','LeftToeBase'),('Hips','RightLeg'),('RightLeg','RightShin'),('RightShin','RightFoot'),('RightFoot','RightToeBase')]
+          frames=np.linspace(0,T-1,8).round().astype(int)
+          fig,axes=plt.subplots(2,len(frames),figsize=(16,6))
+          root0=p[0,J['Hips']].copy()
+          for c,f in enumerate(frames):
+              q=p[f].copy(); q[:,0]-=p[f,J['Hips'],0]-root0[0]; q[:,2]-=p[f,J['Hips'],2]-root0[2]
+              for r,(a0,a1,label) in enumerate([(0,1,'front'),(2,1,'side')]):
+                  ax=axes[r,c]
+                  for u,v in edges:
+                      z=q[[J[u],J[v]]]; ax.plot(z[:,a0],z[:,a1],linewidth=2)
+                  ax.set_aspect('equal',adjustable='box'); ax.set_xticks([]); ax.set_yticks([])
+                  ax.set_title(f'f{f} {f/30:.2f}s {label}',fontsize=8)
+          fig.suptitle('002 W01 Walk F — CMU 91_20 ShyWalk — SOMA77 Stage A')
+          fig.tight_layout(); fig.savefig(out/'002_stageA_contact_sheet.png',dpi=160); plt.close(fig)
+          PY
+          test -f walk002_out/002_stageA_contact_sheet.png
+
+      - name: Upload 002 Stage A
+        uses: actions/upload-artifact@v4
+        with:
+          name: 002_W01_Walk_F_StageA
+          path: |
+            walk002_source/91_20.bvh
+            walk002_source/91_20_*txt
+            walk002_out/
+          if-no-files-found: error
+          retention-days: 14
