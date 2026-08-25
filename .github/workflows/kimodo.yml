@@ -1,4 +1,4 @@
-name: Kimodo F01 Runner
+name: CMU 137_28 Source Fetch
 
 on:
   push:
@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  generate:
+  fetch-cmu:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,73 +18,123 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install client, Blender and gltfpack
-        run: |
-          python -m pip install --upgrade pip
-          pip install 'gradio_client>=1.8,<2' pillow
-          sudo apt-get update
-          sudo apt-get install -y blender python3-numpy libegl1 libgl1 libglx0 libopengl0 libgl1-mesa-dri xvfb
-          npm install --global gltfpack
+      - name: Install downloader dependencies
+        run: pip install requests beautifulsoup4
 
-      - name: Generate F01 with Kimodo
-        env:
-          ANIMOFLOW_SPACE: AnimoFlow/animoflow-demo
-          KIMODO_MODEL: kimodo
-          KIMODO_CHARACTER: Y_bot
-          KIMODO_DURATION: '5.0'
-          KIMODO_SEED: '42'
-          KIMODO_PROMPT: >-
-            A timid young woman standing idle nervously with both arms hanging naturally at her sides, palms facing inward toward the thighs, thumbs pointing forward, shoulders slightly hunched and inward, head slightly lowered, subtle nervous breathing and tiny cautious weight shifts, realistic restrained body language, no weapon, no magic, no exaggerated gestures.
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python run_kimodo.py
-
-      - name: Decompress GLB for QA only
-        run: |
-          mkdir -p artifacts/qa_input
-          SRC=$(find artifacts -maxdepth 1 -name '*.glb' -print -quit)
-          test -n "$SRC"
-          gltfpack -i "$SRC" -o artifacts/qa_input/F01_uncompressed.glb -kn -km -ke
-
-      - name: Verify Blender Python environment
-        run: |
-          PYTHONPATH=/usr/lib/python3/dist-packages blender --background --python-expr "import sys, numpy; print('BLENDER_PYTHON', sys.version); print('NUMPY', numpy.__version__)"
-
-      - name: Blender animation QA
-        env:
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: |
-          xvfb-run -a env PYTHONPATH=/usr/lib/python3/dist-packages LIBGL_ALWAYS_SOFTWARE=1 blender --background --python qa_blender.py
-          test -f artifacts/qa_report.json
-          test -n "$(find artifacts/qa_preview -name '*.png' -print -quit)"
-
-      - name: Build QA contact sheet
+      - name: Download CGSpeed CMU 136-140 pack and extract 137_28
         run: |
           python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, re, shutil, sys, zipfile
           from pathlib import Path
-          from PIL import Image, ImageDraw
-          files=sorted(Path('artifacts/qa_preview').glob('*.png'))
-          if not files:
-              raise SystemExit('no QA renders')
-          thumbs=[]
-          for p in files:
-              im=Image.open(p).convert('RGB').resize((360,360))
-              canvas=Image.new('RGB',(360,390),'white')
-              canvas.paste(im,(0,0))
-              ImageDraw.Draw(canvas).text((8,366),p.stem,fill='black')
-              thumbs.append(canvas)
-          cols=5
-          rows=(len(thumbs)+cols-1)//cols
-          sheet=Image.new('RGB',(cols*360,rows*390),(225,225,225))
-          for i,im in enumerate(thumbs):
-              sheet.paste(im,((i%cols)*360,(i//cols)*390))
-          sheet.save('artifacts/F01_QA_contact_sheet.jpg',quality=92)
+          import requests
+          from bs4 import BeautifulSoup
+
+          page_url = 'https://www.mediafire.com/?u4yfyyvq8yyok93'
+          out = Path('cmu_source')
+          out.mkdir(exist_ok=True)
+          session = requests.Session()
+          session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36'})
+
+          print('Fetching MediaFire landing page:', page_url)
+          r = session.get(page_url, timeout=40)
+          print('Landing status:', r.status_code, 'bytes:', len(r.content), 'final:', r.url)
+          r.raise_for_status()
+          (out/'mediafire_landing.html').write_bytes(r.content)
+
+          soup = BeautifulSoup(r.text, 'html.parser')
+          candidates = []
+          for selector in ['a#downloadButton', 'a.input.popsok', 'a[aria-label*="Download"]']:
+              for a in soup.select(selector):
+                  href = a.get('href')
+                  if href:
+                      candidates.append(href)
+          candidates += re.findall(r'https?://download[^"\'<>\\ ]+', r.text)
+          # Preserve order, discard obvious non-download links.
+          seen=[]
+          for u in candidates:
+              u=u.replace('&amp;','&')
+              if u not in seen and ('mediafire.com' in u or 'download' in u):
+                  seen.append(u)
+          print('Direct candidates:', json.dumps(seen[:10], indent=2))
+          if not seen:
+              raise RuntimeError('Could not resolve MediaFire direct download URL')
+
+          zip_path = out/'cmu_136_140_2010.zip'
+          last=None
+          for direct in seen:
+              try:
+                  print('Trying:', direct)
+                  with session.get(direct, stream=True, timeout=60, allow_redirects=True) as dr:
+                      print('Download status:', dr.status_code, 'type:', dr.headers.get('content-type'), 'len:', dr.headers.get('content-length'), 'final:', dr.url)
+                      dr.raise_for_status()
+                      with zip_path.open('wb') as f:
+                          for chunk in dr.iter_content(1024*1024):
+                              if chunk:
+                                  f.write(chunk)
+                  if zipfile.is_zipfile(zip_path):
+                      break
+                  last=RuntimeError(f'candidate did not return ZIP: {direct}')
+              except Exception as exc:
+                  last=exc
+                  print('Candidate failed:', repr(exc))
+          else:
+              raise RuntimeError(f'No candidate yielded a ZIP; last={last!r}')
+
+          size=zip_path.stat().st_size
+          sha=hashlib.sha256(zip_path.read_bytes()).hexdigest()
+          print('ZIP OK:', size, 'sha256:', sha)
+
+          with zipfile.ZipFile(zip_path) as z:
+              names=z.namelist()
+              hits=[n for n in names if Path(n).name.lower() in {'137_28.bvh','137_28.fbx','137_28.glb'}]
+              print('137_28 hits:', hits)
+              if not hits:
+                  near=[n for n in names if '137_28' in n.lower()]
+                  print('Near matches:', near)
+                  raise RuntimeError('137_28 not found inside archive')
+              # Prefer the requested BVH original from the CGSpeed conversion pack.
+              hits.sort(key=lambda n: (0 if n.lower().endswith('.bvh') else 1, n))
+              member=hits[0]
+              target=out/Path(member).name
+              with z.open(member) as src, target.open('wb') as dst:
+                  shutil.copyfileobj(src,dst)
+
+          file_sha=hashlib.sha256(target.read_bytes()).hexdigest()
+          meta={
+              'motion_id':'137_28',
+              'description':'Normal Wait',
+              'source_dataset':'Carnegie Mellon Graphics Lab Motion Capture Database',
+              'conversion_release':'CGSpeed MotionBuilder-friendly BVH 2010 re-release',
+              'source_page':'https://sites.google.com/a/cgspeed.com/cgspeed/motion-capture/the-motionbuilder-friendly-bvh-conversion-release-of-cmus-motion-capture-database',
+              'mediafire_page':page_url,
+              'archive_member':member,
+              'archive_size_bytes':size,
+              'archive_sha256':sha,
+              'extracted_file':target.name,
+              'extracted_sha256':file_sha,
+              'note':'CGSpeed states the 2010 re-release only changed the added initial T-pose; the CMU motion data itself was unchanged.'
+          }
+          (out/'137_28_source.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
+          print(json.dumps(meta,indent=2))
+
+          # Do not upload the 61 MB source archive; keep only the extracted motion + provenance.
+          zip_path.unlink(missing_ok=True)
+          (out/'mediafire_landing.html').unlink(missing_ok=True)
           PY
 
-      - name: Upload result and QA
+      - name: Inspect BVH header
+        run: |
+          test -f cmu_source/137_28.bvh
+          head -n 40 cmu_source/137_28.bvh
+          grep -n -m1 '^Frames:' cmu_source/137_28.bvh
+          grep -n -m1 '^Frame Time:' cmu_source/137_28.bvh
+
+      - name: Upload CMU source
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: F01_Fearful_Idle_Main_Kimodo
-          path: artifacts/
+          name: CMU_137_28_Normal_Wait_Source
+          path: cmu_source/
           if-no-files-found: warn
           retention-days: 7
