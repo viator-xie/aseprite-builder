@@ -1,0 +1,74 @@
+name: Build 002 Blender Walk Files
+
+on:
+  push:
+    paths:
+      - 'build_002_blender.py'
+      - '.github/workflows/build_002_blender.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download validated 002 final artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 002_W01_Walk_F_Final
+          path: input
+          repository: ${{ github.repository }}
+          run-id: 32851327033
+          github-token: ${{ github.token }}
+
+      - name: Inspect input files
+        run: find input -maxdepth 3 -type f -printf '%p\n'
+
+      - name: Install Blender runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender python3-numpy xvfb
+          blender --version | head -n 2
+
+      - name: Build playable Blender animation files
+        run: |
+          xvfb-run -a blender --background --python build_002_blender.py
+          test -f blender_out/002_W01_Walk_F_InPlace.blend
+          test -f blender_out/002_W01_Walk_F_RootMotion.blend
+          ls -lh blender_out
+
+      - name: Package Blender walk animations
+        run: |
+          cp input/002_W01_Walk_F_InPlace_SOMA77_30fps.bvh blender_out/
+          cp input/002_W01_Walk_F_RootMotion_SOMA77_30fps.bvh blender_out/
+          cp input/002_final_report.json blender_out/
+          cat > blender_out/README_CN.txt <<'EOF'
+          002 — W01_Walk_F 胆怯前走
+
+          002_W01_Walk_F_InPlace.blend
+          - 原地循环版，适合游戏角色移动系统。
+          - 30 FPS。
+          - 打开 Blender 后直接按空格播放。
+
+          002_W01_Walk_F_RootMotion.blend
+          - 带真实前进位移的 Root Motion 版。
+          - 30 FPS。
+          - 打开 Blender 后直接按空格播放。
+
+          动作源：CMU 91_20 ShyWalk。
+          路线：真人 Mocap -> 原生 SOMA77 -> 30 FPS -> 自动循环 QA -> Blender。
+          没有手工逐关节摆姿势。
+          EOF
+
+      - name: Upload Blender deliverable
+        uses: actions/upload-artifact@v4
+        with:
+          name: 002_W01_Walk_F_Blender
+          path: blender_out/
+          if-no-files-found: error
+          retention-days: 14
