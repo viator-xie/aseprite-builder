@@ -1,0 +1,51 @@
+name: 003 V2 Design Stage
+
+on:
+  push:
+    paths:
+      - 'design_003_v2_stage.py'
+      - '.github/workflows/attack003_v2_design_stage.yml'
+  workflow_dispatch:
+
+jobs:
+  design:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install scipy einops bvhio matplotlib
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Load Kimodo motion utilities
+        run: |
+          git clone --depth 1 https://github.com/nv-tlabs/kimodo.git kimodo
+          printf '%s\n' '"""Minimal CI package initializer."""' > kimodo/kimodo/__init__.py
+          printf '%s\n' '"""Minimal CI exports initializer."""' > kimodo/kimodo/exports/__init__.py
+          printf '%s\n' '"""Minimal CI motion_rep initializer."""' > kimodo/kimodo/motion_rep/__init__.py
+      - name: Download CMU 86_05
+        run: |
+          mkdir -p attack003_v2_source
+          curl -L --fail --retry 3 'https://raw.githubusercontent.com/Shriinivas/cmubvh/main/Sequence-086-094/86/Data/86_05.zip' -o attack003_v2_source/86_05.zip
+          unzip -q attack003_v2_source/86_05.zip -d attack003_v2_source/u
+          BVH="$(find attack003_v2_source/u -type f -iname '*.bvh' | head -n1)"
+          test -n "$BVH"
+          cp "$BVH" attack003_v2_source/86_05.bvh
+          grep -n -m1 '^Frames:' attack003_v2_source/86_05.bvh
+          grep -n -m1 '^Frame Time:' attack003_v2_source/86_05.bvh
+      - name: Find real jump and overhead-down candidates
+        run: |
+          PYTHONPATH=kimodo python design_003_v2_stage.py
+          test -f attack003_v2_stage/86_05_design_candidates.json
+          cat attack003_v2_stage/86_05_design_candidates.json
+      - name: Upload design candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: 003_V2_Design_Candidates
+          path: attack003_v2_stage/
+          retention-days: 14
+          if-no-files-found: error
