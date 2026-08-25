@@ -11,7 +11,8 @@ OUT = Path("artifacts")
 PREVIEW = OUT / "qa_preview"
 PREVIEW.mkdir(parents=True, exist_ok=True)
 
-glbs = sorted(OUT.glob("*.glb"))
+qa_glb = OUT / "qa_input" / "F01_uncompressed.glb"
+glbs = [qa_glb] if qa_glb.exists() else sorted(OUT.glob("*.glb"))
 if not glbs:
     raise RuntimeError("No generated GLB found in artifacts/")
 glb = glbs[0]
@@ -24,7 +25,6 @@ if "FINISHED" not in result:
     raise RuntimeError(f"GLB import failed: {result}")
 
 scene = bpy.context.scene
-# Ubuntu 24.04 ships Blender 4.0.2; use the stable Eevee identifier there.
 scene.render.engine = "BLENDER_EEVEE"
 scene.render.resolution_x = 720
 scene.render.resolution_y = 720
@@ -42,7 +42,6 @@ if not meshes:
     raise RuntimeError("Imported GLB has no mesh")
 arm = armatures[0]
 
-# Determine authored action range.
 action = arm.animation_data.action if arm.animation_data else None
 if action:
     start = int(math.floor(action.frame_range[0]))
@@ -51,7 +50,6 @@ else:
     start, end = scene.frame_start, scene.frame_end
 scene.frame_start, scene.frame_end = start, end
 
-# Sample five points through the motion.
 frames = sorted(set([
     start,
     round(start + (end-start)*0.25),
@@ -60,7 +58,6 @@ frames = sorted(set([
     end,
 ]))
 
-# Bounding box across all sampled frames, so the camera never crops the model.
 def world_bounds(sample_frames):
     mn = Vector((1e9, 1e9, 1e9))
     mx = Vector((-1e9, -1e9, -1e9))
@@ -79,7 +76,6 @@ center = (mn + mx) * 0.5
 span = mx - mn
 max_span = max(span.x, span.y, span.z, 1.0)
 
-# Camera + soft three-point lighting.
 bpy.ops.object.camera_add()
 cam = bpy.context.object
 cam.data.type = "ORTHO"
@@ -88,8 +84,7 @@ scene.camera = cam
 
 def point_camera(pos: Vector):
     cam.location = pos
-    direction = center - pos
-    cam.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+    cam.rotation_euler = (center - pos).to_track_quat('-Z', 'Y').to_euler()
 
 for loc, energy, size in [
     (center + Vector((3.0,-4.0,4.5)), 1100, 5.0),
@@ -103,10 +98,9 @@ for loc, energy, size in [
     light.data.size = size
     light.rotation_euler = (center - light.location).to_track_quat('-Z','Y').to_euler()
 
-# Render two orthogonal views for each sampled frame.
 views = {
-    "view_yneg": center + Vector((0, -max_span*3.0, 0)),
-    "view_xpos": center + Vector((max_span*3.0, 0, 0)),
+    "front": center + Vector((0, -max_span*3.0, 0)),
+    "side": center + Vector((max_span*3.0, 0, 0)),
 }
 rendered = []
 for fr in frames:
@@ -121,7 +115,6 @@ for fr in frames:
             raise RuntimeError(f"Render did not produce {path}")
         rendered.append(str(path))
 
-# Basic transform QA from named Mixamo/Y-bot bones.
 def bone_world_head(name: str):
     pb = arm.pose.bones.get(name)
     if pb is None:
