@@ -23,7 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install 'gradio_client>=1.8,<2' pillow
           sudo apt-get update
-          sudo apt-get install -y blender python3-numpy
+          sudo apt-get install -y blender python3-numpy libegl1 libgl1 libglx0 libopengl0 libgl1-mesa-dri xvfb
           npm install --global gltfpack
 
       - name: Generate F01 with Kimodo
@@ -50,8 +50,10 @@ jobs:
           PYTHONPATH=/usr/lib/python3/dist-packages blender --background --python-expr "import sys, numpy; print('BLENDER_PYTHON', sys.version); print('NUMPY', numpy.__version__)"
 
       - name: Blender animation QA
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
-          PYTHONPATH=/usr/lib/python3/dist-packages blender --background --python qa_blender.py
+          xvfb-run -a env PYTHONPATH=/usr/lib/python3/dist-packages LIBGL_ALWAYS_SOFTWARE=1 blender --background --python qa_blender.py
           test -f artifacts/qa_report.json
           test -n "$(find artifacts/qa_preview -name '*.png' -print -quit)"
 
