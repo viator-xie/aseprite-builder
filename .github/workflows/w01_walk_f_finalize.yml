@@ -1,0 +1,102 @@
+name: Finalize 002 Timid Walk
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'finalize_002_walk.py'
+      - '.github/workflows/w01_walk_f_finalize.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  finalize-002:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download validated 002 Stage A artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 002_W01_Walk_F_StageA
+          path: .
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 32850576856
+
+      - name: Install finalization dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install scipy einops bvhio matplotlib
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Load official Kimodo motion utilities only
+        run: |
+          git clone --depth 1 https://github.com/nv-tlabs/kimodo.git kimodo
+          test -f kimodo/kimodo/assets/skeletons/somaskel77/somaskel77_standard_tpose.bvh
+          printf '%s\n' '"""Minimal CI package initializer; heavy model imports disabled."""' > kimodo/kimodo/__init__.py
+          printf '%s\n' '"""Minimal CI exports initializer; import concrete modules directly."""' > kimodo/kimodo/exports/__init__.py
+          printf '%s\n' '"""Minimal CI motion_rep initializer; import feature modules directly."""' > kimodo/kimodo/motion_rep/__init__.py
+
+      - name: Build final 002 gait cycle
+        run: |
+          test -f walk002_out/002_W01_Walk_F_ShyWalk_SOMA77_30fps.npz
+          PYTHONPATH=kimodo python finalize_002_walk.py
+          test -f walk002_out/002_W01_Walk_F_RootMotion_SOMA77_30fps.npz
+          test -f walk002_out/002_W01_Walk_F_RootMotion_SOMA77_30fps.bvh
+          test -f walk002_out/002_W01_Walk_F_InPlace_SOMA77_30fps.npz
+          test -f walk002_out/002_W01_Walk_F_InPlace_SOMA77_30fps.bvh
+          test -f walk002_out/002_final_report.json
+          cat walk002_out/002_final_report.json
+
+      - name: Build final 002 loop QA sheet
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re, numpy as np, matplotlib.pyplot as plt
+          out=Path('walk002_out')
+          d=np.load(out/'002_W01_Walk_F_InPlace_SOMA77_30fps.npz'); p=d['posed_joints']; T=len(p)
+          text=(out/'002_W01_Walk_F_InPlace_SOMA77_30fps.bvh').read_text(errors='replace')
+          names=[]
+          for line in text.splitlines():
+              m=re.match(r'\s*(ROOT|JOINT)\s+(.+)$',line)
+              if m:names.append(m.group(2).strip())
+          if names and names[0]=='Root':names=names[1:]
+          if len(names)!=77:raise RuntimeError(f'expected 77 joints got {len(names)}')
+          J={n:i for i,n in enumerate(names)}
+          edges=[('Hips','Spine1'),('Spine1','Spine2'),('Spine2','Chest'),('Chest','Neck1'),('Neck1','Neck2'),('Neck2','Head'),('Chest','LeftShoulder'),('LeftShoulder','LeftArm'),('LeftArm','LeftForeArm'),('LeftForeArm','LeftHand'),('Chest','RightShoulder'),('RightShoulder','RightArm'),('RightArm','RightForeArm'),('RightForeArm','RightHand'),('Hips','LeftLeg'),('LeftLeg','LeftShin'),('LeftShin','LeftFoot'),('LeftFoot','LeftToeBase'),('Hips','RightLeg'),('RightLeg','RightShin'),('RightShin','RightFoot'),('RightFoot','RightToeBase')]
+          frames=np.linspace(0,T-1,12).round().astype(int)
+          fig,axes=plt.subplots(2,len(frames),figsize=(20,6))
+          for c,f in enumerate(frames):
+              for r,(a0,a1,label) in enumerate([(0,1,'front'),(2,1,'side')]):
+                  ax=axes[r,c]
+                  for u,v in edges:
+                      q=p[f,[J[u],J[v]]];ax.plot(q[:,a0],q[:,a1],linewidth=2)
+                  ax.set_aspect('equal',adjustable='box');ax.set_xticks([]);ax.set_yticks([])
+                  ax.set_title(f'f{f} {f/30:.2f}s {label}',fontsize=7)
+          fig.suptitle('002 W01 Walk F — final in-place SOMA77 loop')
+          fig.tight_layout();fig.savefig(out/'002_final_contact_sheet.png',dpi=160);plt.close(fig)
+          PY
+          test -f walk002_out/002_final_contact_sheet.png
+
+      - name: Upload final 002 deliverable
+        uses: actions/upload-artifact@v4
+        with:
+          name: 002_W01_Walk_F_Final
+          path: |
+            walk002_out/002_W01_Walk_F_RootMotion_SOMA77_30fps.npz
+            walk002_out/002_W01_Walk_F_RootMotion_SOMA77_30fps.bvh
+            walk002_out/002_W01_Walk_F_InPlace_SOMA77_30fps.npz
+            walk002_out/002_W01_Walk_F_InPlace_SOMA77_30fps.bvh
+            walk002_out/002_final_report.json
+            walk002_out/002_final_contact_sheet.png
+          if-no-files-found: error
+          retention-days: 14
