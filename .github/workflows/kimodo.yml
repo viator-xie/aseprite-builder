@@ -8,7 +8,7 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,10 +18,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install client
+      - name: Install client and Blender
         run: |
           python -m pip install --upgrade pip
-          pip install 'gradio_client>=1.8,<2'
+          pip install 'gradio_client>=1.8,<2' pillow
+          sudo apt-get update
+          sudo apt-get install -y blender
 
       - name: Generate F01 with Kimodo
         env:
@@ -35,7 +37,33 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python run_kimodo.py
 
-      - name: Upload result
+      - name: Blender animation QA
+        run: blender --background --python qa_blender.py
+
+      - name: Build QA contact sheet
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageOps, ImageDraw
+          files=sorted(Path('artifacts/qa_preview').glob('*.png'))
+          if not files:
+              raise SystemExit('no QA renders')
+          thumbs=[]
+          for p in files:
+              im=Image.open(p).convert('RGB').resize((360,360))
+              canvas=Image.new('RGB',(360,390),'white')
+              canvas.paste(im,(0,0))
+              ImageDraw.Draw(canvas).text((8,366),p.stem,fill='black')
+              thumbs.append(canvas)
+          cols=5
+          rows=(len(thumbs)+cols-1)//cols
+          sheet=Image.new('RGB',(cols*360,rows*390),(225,225,225))
+          for i,im in enumerate(thumbs):
+              sheet.paste(im,((i%cols)*360,(i//cols)*390))
+          sheet.save('artifacts/F01_QA_contact_sheet.jpg',quality=92)
+          PY
+
+      - name: Upload result and QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
