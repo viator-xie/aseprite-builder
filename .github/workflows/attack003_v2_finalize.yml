@@ -1,0 +1,64 @@
+name: Finalize 003 V2 Designed Combo
+
+on:
+  push:
+    paths:
+      - 'finalize_003_v2_designed_combo.py'
+      - '.github/workflows/attack003_v2_finalize.yml'
+  workflow_dispatch:
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download validated swordplay Stage A
+        uses: actions/download-artifact@v4
+        with:
+          name: 003_Attack_Combo_StageA
+          path: input_stageA
+          repository: ${{ github.repository }}
+          run-id: 32857891528
+          github-token: ${{ github.token }}
+      - name: Download real jump/chop design source
+        uses: actions/download-artifact@v4
+        with:
+          name: 003_V2_Design_Candidates
+          path: input_jump
+          repository: ${{ github.repository }}
+          run-id: 32861280401
+          github-token: ${{ github.token }}
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install scipy einops bvhio matplotlib
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Load Kimodo motion utilities
+        run: |
+          git clone --depth 1 https://github.com/nv-tlabs/kimodo.git kimodo
+          printf '%s\n' '"""Minimal CI package initializer."""' > kimodo/kimodo/__init__.py
+          printf '%s\n' '"""Minimal CI exports initializer."""' > kimodo/kimodo/exports/__init__.py
+          printf '%s\n' '"""Minimal CI motion_rep initializer."""' > kimodo/kimodo/motion_rep/__init__.py
+      - name: Build genuinely redesigned combo
+        run: |
+          find input_stageA -type f | head -n 30
+          find input_jump -type f | head -n 30
+          PYTHONPATH=kimodo python finalize_003_v2_designed_combo.py
+          cat attack003_v2_final/003_v2_report.json
+          test -f attack003_v2_final/003_v2_designed_contact_sheet.png
+          test -f attack003_v2_final/003_A01_Designed_Combo_3Hit_V2_InPlace_SOMA77_30fps.bvh
+          test -f attack003_v2_final/003_A01_Designed_Combo_3Hit_V2_RootMotion_SOMA77_30fps.bvh
+      - name: Upload redesigned combo data
+        uses: actions/upload-artifact@v4
+        with:
+          name: 003_A01_Designed_Combo_3Hit_V2_Data
+          path: attack003_v2_final/
+          retention-days: 14
+          if-no-files-found: error
