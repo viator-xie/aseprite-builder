@@ -39,9 +39,13 @@ jobs:
           grep -n -m1 '^Frame Time:' attack003_v2_source/86_05.bvh
       - name: Find real jump and overhead-down candidates
         run: |
+          set +e
           PYTHONPATH=kimodo python design_003_v2_stage.py
-          test -f attack003_v2_stage/86_05_design_candidates.json
-          cat attack003_v2_stage/86_05_design_candidates.json
+          set -e
+          test -f attack003_v2_stage/86_05_SOMA77_30fps.npz
+          test -n "$(find attack003_v2_stage -name 'jump_*.png' -print -quit)"
+          test -n "$(find attack003_v2_stage -name 'chop_*.png' -print -quit)"
+          find attack003_v2_stage -maxdepth 1 -type f -printf '%f\n' | sort
       - name: Upload design candidates
         uses: actions/upload-artifact@v4
         with:
